@@ -4,15 +4,23 @@ Comments/improvements/etc. welcome. Please email:
 
 gregory.a.huber@outlook.com with the subject "Arduino Lora Tracker"
 
-This requires two units:
+==============================
+
+This project requires two units:
 (1) A transmitter, the unit that goes in the rocket, which sends its GPS information every second
 (2) A receiver/base unit, which you hold onto, which tracks its own GPS location and receives information from the transmitter.
+
+Manifest:
 
 Parts lists for each unit, available from AdaFruit, are in the PartsList folder
 
 Shape files (stls) for the case that holds the receiver are in the STLFilesBaseUnitCase folder
 
 Photos of the assembled transmitter and receiver are in the Photos folder
+
+Code: Feather_PairedGPSSendTrack_publicversion.ino
+
+==============================
 
 Brief overview of functionality:
 
@@ -36,7 +44,7 @@ The receiver has three information screens, selected by pressing the top (A), mi
 Screen A displays:
 A <Pk> flag appears whenever a new packet is received from the transmitter.
 The receiver's status, "R: {F=Valid current own GPS Fix;SF(#)=# of seconds since last valid own GPS Fix;NF=Never had a valid own GPS Fix}"
-The transmitter's status, "T: {F=Valid current target GPS Fix;SF(#)=# of seconds since last valid target GPS Fix;Never Fix=Never had a valid target GPS Fix; Never Sync=Never receveived a packet from target}"
+The transmitter's status, "T: {F=Valid current target GPS Fix;SF(#)=# of seconds since last valid target GPS Fix;Never Fix=Never had a valid target GPS Fix; Never Sync=Never received a packet from target}"
 If the receiver has ever gotten a valid fix from the transmitter, it will display that Lat., Long., and Alt.
 
 Screen B (default) displays
