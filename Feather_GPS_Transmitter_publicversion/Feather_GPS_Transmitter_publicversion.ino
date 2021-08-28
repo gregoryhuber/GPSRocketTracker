@@ -1,14 +1,15 @@
-
 //////////////////////////////////////////////////////////////////////////
 // RFM95 Lora Arduino GPS tracking system
-// Version 1.1
-// 2021/07/10
+// Version 1.2
+// 2021/08/18
 // Gregory Huber (gregory.a.huber@outlook.com)
+//
+// This is the code for the TRANSMITTER
+//
 //////////////////////////////////////////////////////////////////////////
 
 // This is the codebase for an Arduino feather-based GPS tracking system suitable for rocket tracking
-// The physical unit is comprised of a base station and a tracker (transmitter)
-// The codebase for both components is the same. You set below whether this is a tracker (ReceiveNotTransmitLocation FALSE) or a receiver (ReceiveNotTransmitLocation TRUE)
+// The physical setup is comprised of a base station (receiver) and a tracker (transmitter)
 // For the tracker/transmitter, the display unit is optional, configured using UseDisplay
 
 // The base station is built around the following minimal equipment:
@@ -18,14 +19,15 @@
 // FeatherWing Triple (base unit) https://www.adafruit.com/product/3417  
 // uFL SMT Connector https://www.adafruit.com/product/1661
 // 900 Mhz Antenna https://www.adafruit.com/product/3340
+// 2000mAh LIPO battery https://www.adafruit.com/product/2011
 
 // The (smallest) tracking unit is built around an the following equipment:
 // Adafruit Feather M0 with RFM95 LoRa Radio - 900MHz – RadioFruit https://www.adafruit.com/product/3178
 // GPS receiver https://www.adafruit.com/product/746
-// 400mah LIPO battery https://www.adafruit.com/product/3898
 // Quarter Wavelength Wire antenna (3.12inches) http://www.csgnetwork.com/antennagenericfreqlencalc.html
+// 400mah LIPO battery https://www.adafruit.com/product/3898
 
-// This code draws on the following resouces and references. Thank you!
+// This code draws on the following resouces and references. Thank you.
 // This is a fully fleshed out example from which many of the transmission details were copied https://github.com/mloudon/electrosew/blob/master/feather_send/feather_send.ino
 // https://gis.stackexchange.com/questions/252672/calculate-bearing-between-two-decimal-gps-coordinates-arduino-c
 // https://community.particle.io/t/tinygps-using-distancebetween/28233/3
@@ -44,18 +46,12 @@
 // Specify mode and hardware
 
 // Set to true to enable display. Set to false to disable. 
-// It doesn't make sense for the base unit not to have a display (you couldn't see what data you were getting). It is optional for the tracker
 #define UseDisplay false
-// Set this to false to make it a transmitter, to true to be receiver
-#define ReceiveNotTransmitLocation false
 
 //////////////////////////////////////////////////////////
 // DebugDebugging mode
 // Enable each of these flags to enable diffent parts of the DebugDebugging code
-#define DebuggingButtons false
-#define DebuggingDisplay false
 #define DebuggingOwnGPS false
-#define DebuggingTargetGPS false
 #define DebuggingRadio false
 
 //////////////////////////////////////////////////////////
@@ -83,7 +79,7 @@ Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &Wire);
 #define BUTTON_C  5
 
 //////////////////////////////////////////////////////////
-// Setup LORA Radio
+// Setup LORFA Radio
 #define LED 13
 
 #define RFM95_CS      8
@@ -107,44 +103,25 @@ RH_RF95 rf95(RFM95_CS, RFM95_INT);
 // set update intervals for getting own and target GPS locations and displaying to OLED
 // These are in milliseconds, so 1000 = 1 second
 #define OwnGPSUpdateInterval 1000
-#define TargetGPSUpdateInterval 1000
 #define DisplayUpdateInterval 750
-#define ButtonUpdateInterval 500
 #define SendViaRadioInterval 1000
-
-// for target GPS, either grab via radio or set to fixed static location for testing purposes
-#define TargetGPSUseStatic false
-// New Haven Green
-#define TargetStaticLat 41.308200 
-#define TargetStaticLong -72.926100
-#define TargetStaticAlt 100
 
 // Whether ever received a valid GPS fix
 bool OwnEverValidGPS = false;
-bool TargetEverSync = false;
-bool TargetEverValidGPS = false;
 
 // Timers used to figure out last target GPS update, last local GPS update, and Last display
 uint32_t LastOwnLocationUpdate = millis();
-uint32_t LastTargetLocationUpdate= millis();
 uint32_t LastDisplayUpdate = millis();
 uint32_t LastButtonUpdate = millis();
 uint32_t LastSendViaRadio = millis();
 
+// Storage for GPS info
 double OwnLat, OwnLong;
 int OwnGSPLastQuality, OwnAlt, OwnSpeed, OwnBearing;
 uint32_t OwnLastUpdateMillis, OwnLastUpdateTime;
 bool OwnStaleLocation = false;
 
-double TargetLat, TargetLong;
-int TargetAlt;
-uint32_t TargetLastUpdateMillis, TargetLastUpdateTime;
-bool TargetStaleLocation = false;
-bool DisplayNewPacketFlag = false;
 bool SendingPacket = false;
-
-// store last button pushed on diplay, default to 'B'
-char LastButtonPushed = 'B';
 
 void setup()
 {
@@ -181,12 +158,7 @@ void setup()
     display.setTextSize(1);
     display.setTextColor(WHITE);
     display.setCursor(0,0);
-    if (ReceiveNotTransmitLocation) {
-      display.println("Init. GPS Track.");
-    }
-    else {
-      display.println("Init. GPS Send.");
-      }
+    display.println("Init. GPS Transmitter");
     display.print("Freq.: ");
     display.println(RF95_FREQ);
     display.print("Magic Num.: ");
@@ -297,77 +269,6 @@ void setup()
 uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
 int lastRSSI;
 
-// processRecv processes an incoming packet
-bool processRecv() {
-
-  bool TempStaleGPS;
-  bool TempEverGPSFix;
-  int32_t TempRecLat;
-  int32_t TempRecLong;
-  int32_t TempAlt;
-    
-  // verify magic number matches
-  for (int i = 0; i < MAGIC_NUMBER_LEN; i++) {
-    if (MAGIC_NUMBER[i] != buf[i]) {
-      return(false);
-    }
-  }
-
-  // If we get this far, we know we've gotten a packet
-  TargetEverSync = true;
-
-  // Now take apart packet into its pieces
-  void* p = buf + MAGIC_NUMBER_LEN;
-  TempEverGPSFix= *(bool*)p;
-  p = (bool*)p + 1;
-  TempStaleGPS= *(bool*)p;
-  p = (bool*)p + 1;
-  TempRecLat = *(int32_t*)p;
-  p = (int32_t*)p + 1;
-  TempRecLong = *(int32_t*)p;
-  p = (int32_t*)p + 1;
-  TempAlt = *(int32_t*)p;
-
-  // Has the transmitter ever gotten a valid fix, if not, simply return true that we've gotten a packet
-  if (TempEverGPSFix==0) {
-      return(true);
-  }
-  // If we get here, we know we've ever gotten a valid GPS signal. Set flag
-  TargetEverValidGPS = true;
-
-  // If we've gotten a non-stale GPS packet, update LastTargetLocationUpdate time and TargetStaleLocation flag
-  if (TempStaleGPS==0) {
-    LastTargetLocationUpdate=millis();
-    TargetStaleLocation=false;
-  }   
-
-  // You might ask why are we processing a stale GPS signal from the tranceiver? Well suppose the tracker loses power and you reboot it
-  // You want to make sure that your tracker will parse the stale GPS coordinates, because it is still better than nothing
-  
-  // Note that this force division to be in doubles to recover decimal correctly
-  TargetLat=(double)TempRecLat/100000;
-  TargetLong=(double)TempRecLong/100000;
-  TargetAlt=TempAlt;
-  
-  if (DebuggingRadio) {
-    Serial.print("Received data: ");
-    Serial.print(TempStaleGPS);
-    Serial.print(",");
-    Serial.print(TempRecLat);
-    Serial.print(",");
-    Serial.print(TempRecLong);
-    Serial.print(",");
-    Serial.println(TempAlt);
-    Serial.print("Decoded data: ");
-    Serial.print(TargetLat,6);
-    Serial.print(",");
-    Serial.print(TargetLong,6);
-    Serial.print(",");
-    Serial.println(TargetAlt,6);    
-  }  
-  return(true);
-}
-
 // transmitData sends an outgoing packet
 void transmitData() {
 
@@ -398,6 +299,14 @@ void transmitData() {
     Serial.print(TempLong);
     Serial.print(",");
     Serial.println(TempAlt);  }
+  
+  // Define the packet size--two booleans, 3 int_32, and then the magic numbers
+  // Packet is composed of:
+  //   binary flag for whether ever a valid GPS fix
+  //   binary flag for whether GPS fix is stale
+  //   Latitude (without decimal)
+  //   Longitude (without decimal)
+  //   Altitude (in feet)
   
   uint8_t len = 2 * sizeof(bool) + + 3 * sizeof(int32_t) + + MAGIC_NUMBER_LEN + 1;
   uint8_t radiopacket[len];
@@ -431,54 +340,6 @@ void transmitData() {
 
 }
 
-// Both the distanceBetween and courtTo functions are from TinyGPS++ library, copied entirely and edited to return in feet rather than meters
-double distanceBetween(double lat1, double long1, double lat2, double long2)
-{
-  // Greg edit is to return distance in feet, rather than meters
-  
-  // returns distance in meters between two positions, both specified
-  // as signed decimal-degrees latitude and longitude. Uses great-circle
-  // distance computation for hypothetical sphere of radius 6372795 meters.
-  // Because Earth is no exact sphere, rounding errors may be up to 0.5%.
-  // Courtesy of Maarten Lamers
-  double delta = radians(long1-long2);
-  double sdlong = sin(delta);
-  double cdlong = cos(delta);
-  lat1 = radians(lat1);
-  lat2 = radians(lat2);
-  double slat1 = sin(lat1);
-  double clat1 = cos(lat1);
-  double slat2 = sin(lat2);
-  double clat2 = cos(lat2);
-  delta = (clat1 * slat2) - (slat1 * clat2 * cdlong);
-  delta = sq(delta);
-  delta += sq(clat2 * sdlong);
-  delta = sqrt(delta);
-  double denom = (slat1 * slat2) + (clat1 * clat2 * cdlong);
-  delta = atan2(delta, denom);
-  return delta * 6372795*3.281;
-}
-
-double courseTo(double lat1, double long1, double lat2, double long2)
-{
-  // returns course in degrees (North=0, West=270) from position 1 to position 2,
-  // both specified as signed decimal-degrees latitude and longitude.
-  // Because Earth is no exact sphere, calculated course may be off by a tiny fraction.
-  // Courtesy of Maarten Lamers
-  double dlon = radians(long2-long1);
-  lat1 = radians(lat1);
-  lat2 = radians(lat2);
-  double a1 = sin(dlon) * cos(lat2);
-  double a2 = sin(lat1) * cos(lat2) * cos(dlon);
-  a2 = cos(lat1) * sin(lat2) - a2;
-  a2 = atan2(a1, a2);
-  if (a2 < 0.0)
-  {
-    a2 += TWO_PI;
-  }
-  return degrees(a2);
-}
-
 // This is the main loop which runs over and over
 void loop() // run over and over again
 {
@@ -489,239 +350,48 @@ void loop() // run over and over again
   // because a transmission signal is still useful for finding a lost tracker
   // that can't get an updated GPS location. Additionally, this sends even if there
   // is not valid GPS data, because at least then you can check for a sync
-  if (!ReceiveNotTransmitLocation) {
-    if ((LastSendViaRadio+SendViaRadioInterval)<millis()) {
-      LastSendViaRadio=millis();
-      SendingPacket = true;
-      transmitData();
-      }
-  }
-
-  //////////////////////////////////////////////////////////////////////////
-  // If in receive mode, grab any packet that has come over the radio
-  if (ReceiveNotTransmitLocation) {
-    if (rf95.available()) {
-      uint8_t len = sizeof(buf);
-      if (rf95.recv(buf, &len)) {
-        lastRSSI = rf95.lastRssi();
-        digitalWrite(LED, HIGH);
-        digitalWrite(LED, LOW);
-        if (processRecv()) {
-          TargetLastUpdateMillis=millis();
-          DisplayNewPacketFlag=true;
-          if (DebuggingRadio) {
-            Serial.print("Last RSSI: ");
-            Serial.println(lastRSSI);
-            Serial.print("Decoded data: ");
-            Serial.print(TargetEverValidGPS);
-            Serial.print(",");
-            Serial.print(TargetStaleLocation);
-            Serial.print(",");
-            Serial.print(TargetLat);
-            Serial.print(",");
-            Serial.print(TargetLong);
-            Serial.print(",");
-            Serial.println(TargetAlt);
-          }  
-        }
-        else if (DebuggingRadio) {
-          Serial.println("Unable to parse received packet");
-        }
-      }
+  if ((LastSendViaRadio+SendViaRadioInterval)<millis()) {
+    LastSendViaRadio=millis();
+    SendingPacket = true;
+	transmitData();
     }
-    if ((LastTargetLocationUpdate+30000)<millis()) TargetStaleLocation = true;
-  } 
-  
-  //////////////////////////////////////////////////////////////////////////
-  // Query Button Status every ButtonUpdateInterval
-  if (UseDisplay) {
-    if ((LastButtonUpdate+ButtonUpdateInterval)<millis()) {
-  
-      LastButtonUpdate=millis();
-     
-      // Record which button is being pushed. Note if multiple buttons, records C
-      if(!digitalRead(BUTTON_C)) {
-        LastButtonPushed = 'C';
-      }
-      else if(!digitalRead(BUTTON_B)) {
-        LastButtonPushed = 'B';
-      }
-      else if(!digitalRead(BUTTON_A)) {
-        LastButtonPushed = 'A';
-      }
-      
-      // In Debugging mode, serial print last button pushed
-      if (DebuggingButtons) {
-        Serial.print("Last Button Pushed: ");
-        Serial.println(LastButtonPushed);
-      }
-    
-    }
-  }
-  //////////////////////////////////////////////////////////////////////////
-
-
-  //////////////////////////////////////////////////////////////////////////
-  // If Receiving, check whether using Static GPS for testing.
-  if (ReceiveNotTransmitLocation) {
-    if ((TargetGPSUseStatic==true)) {
-      TargetEverValidGPS = true;
-      TargetLat = TargetStaticLat;
-      TargetLong = TargetStaticLong;
-      TargetAlt = TargetStaticAlt;
-      if (DebuggingTargetGPS) {
-        delay(10000);
-        Serial.print("Set Static Target GPS Lat/Long/Alt: ");
-        Serial.print(TargetLat,6);
-        Serial.print(", ");
-        Serial.print(TargetLong,6);
-        Serial.print(", ");
-        Serial.println(TargetAlt);
-       }
-    }
-  }
-  //////////////////////////////////////////////////////////////////////////
 
   //////////////////////////////////////////////////////////////////////////
   // Update OLED display screen every ButtonUpdateInterval
   if (UseDisplay) {
     if ((LastDisplayUpdate+DisplayUpdateInterval )<millis()) {
   
-      LastDisplayUpdate=millis();
+    LastDisplayUpdate=millis();
 
-      display.clearDisplay();
-      display.display();
-      display.setCursor(0,0);
+    display.clearDisplay();
+    display.display();
+    display.setCursor(0,0);
 	  
-	  // This is what gets displayed if this is a transmitter with a display
-      if (!ReceiveNotTransmitLocation) {
+	// This is what gets displayed if this is a transmitter with a display
 
-        display.print("Send: VBAT=");
-        float  measuredvbat  =  (analogRead ( VBATPIN ));
-        measuredvbat *= 2;
-        measuredvbat *= 3.3;
-        measuredvbat /= 1024;
-        display.print(measuredvbat);
-        if(OwnEverValidGPS) {
-          if (OwnStaleLocation) display.print(" (Stale GPS!)");
-          if (SendingPacket) {
-              display.print(" (*)");
-              SendingPacket = false;
-          }
-          display.print("\n");
-          display.print(String("Last: " + String(OwnLastUpdateTime, DEC)) + "\n");
-          display.print(String("Lat: " +  String(int( OwnLat  ) , DEC ) + "." + String( abs(round( ((OwnLat -int(OwnLat)) * 100000)))) + "\n"));
-          display.print(String("Long: " + String(int( OwnLong ) , DEC ) + "." + String( abs(round( ((OwnLong-int(OwnLong)) * 100000)))) + "\n"));
-        }
-        else {
-             display.print("\nNever Fix");
-        }
-      } // This is what happens if this is a receiver...
-      else {
-
-       // In Debugging mode, serial print which loop triggered
-        if (DebuggingDisplay) {
-          Serial.print("Last Button Pushed in OLED Loop: ");
-          Serial.println(LastButtonPushed);
-        }
-                 
-        // Button A is just basic status
-        if (LastButtonPushed == 'A') {
-		      //No longer printing battery voltage because it causes unit to reboot. Don't know why.
-          //float  measuredvbat  =  (analogRead ( VBATPIN ));
-          //measuredvbat *= 2;
-          //measuredvbat *= 3.3;
-          //measuredvbat /= 1024;
-          display.print("A: ");
-          //display.println(measuredvbat);
-          if (DisplayNewPacketFlag) {
-            display.print("<Pk> ");
-            DisplayNewPacketFlag=false;
-          }
-
-          //Display receiver status
-          display.print("R:");
-          if(OwnEverValidGPS & !OwnStaleLocation) {
-            display.print("F");
-          } else if(OwnEverValidGPS) {
-            display.print("SF(" + String(min(99,int((millis()-LastOwnLocationUpdate)/1000))) + ")");          
-          } else {
-            display.print("NF");
-          }
-
-          //Display target status
-          display.print(" T:");
-          if(TargetEverSync) {
-           
-            if (TargetEverValidGPS & !TargetStaleLocation) {
-              display.print("F\n");
-              }
-            if (TargetEverValidGPS & TargetStaleLocation) {
-              display.print("SF(" + String(min(99,int((millis()-LastTargetLocationUpdate)/1000))) + ")\n");          
-             }
-            
-            //If we have ever had a valid fix to the target, print Lat/Long/Alt
-            if (TargetEverValidGPS) {
-              display.print(String("TLt: " +  String(int( TargetLat  ) , DEC ) + "." + String( int(abs(round( ((TargetLat -int(TargetLat)) * 100000)))), DEC ) + "\n"));
-              display.print(String("TLg: " + String(int( TargetLong ) , DEC ) + "." + String( int(abs(round( ((TargetLong-int(TargetLong)) * 100000)))), DEC ) + "\n"));
-              display.print(String("TAlt: " + String(int( TargetAlt ) , DEC ) + "\n"));
-            }           
-            if (!TargetEverValidGPS) {
-              display.print("NeverFix\n");
-            }
-            } else {
-              display.print("NeverSync\n");
-          }       
-        }
-        // Button B is own receiver location
-        else if (LastButtonPushed == 'B') {
-          display.print("B: R: ");
-          if(OwnEverValidGPS) {
-            if (OwnStaleLocation) {
-              display.print("SF(" + String(min(99,int((millis()-LastOwnLocationUpdate)/1000))) + ") ");          
-             }
-            display.print(String("RLt: " +  String(int( OwnLat  ) , DEC ) + "." + String( int(abs(round( ((OwnLat -int(OwnLat)) * 100000)))), DEC ) + "\n"));
-            display.print(String("RLg: " + String(int( OwnLong ) , DEC ) + "." + String( int(abs(round( ((OwnLong-int(OwnLong)) * 100000)))), DEC ) + "\n"));
-            display.print(String("RAlt: " + String(int( OwnAlt ) , DEC )));
-            display.print(String(" | Spd: " + String(OwnSpeed, DEC)));
-            display.print(String(" | Bear: " + String(OwnBearing, DEC)) + "\n");
-          }
-          else {
-               display.print("Never GPS Fix");
-          }
-        }
-        // If not A or B, assume it is C
-        else {
-          display.print("C: Nav ");
-          if (DisplayNewPacketFlag) {
-            display.print("<Pk> ");
-            DisplayNewPacketFlag=false;
-          }
-          if(OwnEverValidGPS & TargetEverValidGPS) {
-            if (OwnStaleLocation) display.print("(RS) ");
-            if (TargetStaleLocation) display.print("(TS) ");
-            display.print("\n");
-            display.print("RSSI=");
-            display.println(lastRSSI);
-            display.print(String("Distance: " + String(round(distanceBetween(OwnLat, OwnLong, TargetLat, TargetLong)), 0)) + " ft.\n");
-            display.print(String("Bearing: " + String(round(courseTo(OwnLat, OwnLong, TargetLat, TargetLong)), 0)) + " deg.\n");
-          }
-          else if (TargetEverValidGPS) {
-            display.println("Missing own fix");
-            display.print("RSSI=");
-            display.println(lastRSSI);
-          }
-          else {
-            display.print("Missing both fix");
-            if(TargetEverSync) {
-              display.print("RSSI=");
-              display.println(lastRSSI);
-            }
-          }
-        }
-      }
-      
-      display.display(); // actually display all of the above
+  display.print("Send: ");
+	//display.print("Send: VBAT=");
+	//float  measuredvbat  =  (analogRead ( VBATPIN ));
+	//measuredvbat *= 2;
+	//measuredvbat *= 3.3;
+	//measuredvbat /= 1024;
+	//display.print(measuredvbat);
+	if(OwnEverValidGPS) {
+	  if (OwnStaleLocation) display.print("(Stale GPS!) ");
+	  if (SendingPacket) {
+		  display.print("(*) ");
+		  SendingPacket = false;
+	  }
+    display.print("\n");
+    display.print(String("Lat: " +  String(int( OwnLat  ) , DEC ) + "." + String( int(abs(round( ((OwnLat -int(OwnLat)) * 100000)))), DEC ) + "\n"));
+    display.print(String("Long: " + String(int( OwnLong ) , DEC ) + "." + String( int(abs(round( ((OwnLong-int(OwnLong)) * 100000)))), DEC ) + "\n"));
+    display.print(String("Alt: " + String(int( OwnAlt ) , DEC ) + "\n"));
+	}
+	else {
+		 display.print("Never Fix");
+	}
+  
+	display.display(); // actually display all of the above
   
     }
   }
@@ -760,8 +430,8 @@ void loop() // run over and over again
        OwnStaleLocation = false;
     }
 
-    // If not update in last 30 seconds, declare own location stale
-    if ((OwnLastUpdateMillis+30000)<millis()) OwnStaleLocation = true;
+    // If no GPS update in last 60 seconds, declare own location stale and set flag
+    if ((OwnLastUpdateMillis+60000)<millis()) OwnStaleLocation = true;
 
     if (DebuggingOwnGPS) {
       Serial.print("Time: ");
@@ -789,20 +459,14 @@ void loop() // run over and over again
         Serial.print("Angle: "); Serial.println(GPS.angle);
         Serial.print("Satellites: "); Serial.println((int)GPS.satellites);
       }
-      if(OwnEverValidGPS & TargetEverValidGPS) {
         if (OwnStaleLocation) Serial.print("(Own Stale!) ");
-        if (TargetStaleLocation) Serial.print("(Target Stale!) ");
         Serial.print("\n");
-        Serial.print(String("Distance:" + String(round(distanceBetween(OwnLat, OwnLong, TargetLat, TargetLong)), DEC)) + "\n");
-        Serial.print(String("Bearing:" + String(courseTo(OwnLat, OwnLong, TargetLat, TargetLong), DEC)) + "\n");
-      }
     }
   }
 
   // if millis() or timer wraps around, we'll just reset it
   if (LastOwnLocationUpdate > millis()) {
     LastOwnLocationUpdate = millis();
-    LastTargetLocationUpdate= millis();
     LastDisplayUpdate = millis();
     LastButtonUpdate= millis();
     LastSendViaRadio= millis();
