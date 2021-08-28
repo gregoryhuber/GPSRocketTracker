@@ -1,3 +1,5 @@
+https://github.com/gregoryhuber/GPSRocketTracker
+
 This is the repository for a homebrew GPS Rocket Tracker built around Arduino feather M0 units with embedded LORA radios. Observed successful range over flat territory (when the rocket is laying on the ground) is 1.2km. Longer range has been achieved when the target is airborne, but I'm not sure yet what the maximum is. It likely depends on the antenna.
 
 Comments/improvements/etc. welcome. Please email:
